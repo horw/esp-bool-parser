@@ -25,15 +25,6 @@ from pyparsing import (
     opAssoc,
 )
 
-from .constants import (
-    IDF_VERSION,
-    IDF_VERSION_MAJOR,
-    IDF_VERSION_MINOR,
-    IDF_VERSION_PATCH,
-)
-from .soc_header import (
-    SOC_HEADERS,
-)
 from .utils import (
     InvalidInput,
     to_version,
@@ -82,6 +73,20 @@ class ChipAttr(Stmt):
         if self.attr == 'IDF_TARGET':
             return target
 
+        if self.attr == 'CONFIG_NAME':
+            return config_name
+
+        # for non-keyword cap words, check if it is defined in the environment variables
+        if self.attr in os.environ:
+            return os.environ[self.attr]
+
+        from .constants import (
+            IDF_VERSION,
+            IDF_VERSION_MAJOR,
+            IDF_VERSION_MINOR,
+            IDF_VERSION_PATCH,
+        )
+
         if self.attr == 'IDF_VERSION':
             return IDF_VERSION
 
@@ -94,15 +99,10 @@ class ChipAttr(Stmt):
         if self.attr == 'IDF_VERSION_PATCH':
             return IDF_VERSION_PATCH
 
-        if self.attr == 'CONFIG_NAME':
-            return config_name
+        from .soc_header import SOC_HEADERS
 
         if self.attr in SOC_HEADERS[target]:
             return SOC_HEADERS[target][self.attr]
-
-        # for non-keyword cap words, check if it is defined in the environment variables
-        if self.attr in os.environ:
-            return os.environ[self.attr]
 
         return 0  # default return 0 as false
 
