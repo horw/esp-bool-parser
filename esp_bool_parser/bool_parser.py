@@ -1,12 +1,10 @@
-# SPDX-FileCopyrightText: 2022-2024 Espressif Systems (Shanghai) CO LTD
+# SPDX-FileCopyrightText: 2022-2025 Espressif Systems (Shanghai) CO LTD
 # SPDX-License-Identifier: Apache-2.0
 import operator
 import os
+import typing as t
 from ast import (
     literal_eval,
-)
-from typing import (
-    Any,
 )
 
 from packaging.version import (
@@ -15,7 +13,6 @@ from packaging.version import (
 from pyparsing import (
     Keyword,
     Literal,
-    MatchFirst,
     ParseResults,
     QuotedString,
     Suppress,
@@ -34,13 +31,12 @@ from .constants import (
     IDF_VERSION_MINOR,
     IDF_VERSION_PATCH,
 )
-from utils import (
-    InvalidIfClause,
+from .soc_header import (
+    SOC_HEADERS,
+)
+from .utils import (
     InvalidInput,
     to_version,
-)
-from soc_header import (
-    SOC_HEADERS,
 )
 
 
@@ -49,7 +45,7 @@ class Stmt:
     Statement
     """
 
-    def get_value(self, target: str, config_name: str) -> Any:
+    def get_value(self, target: str, config_name: str) -> t.Any:
         """
         Lazy calculated. All subclasses of `Stmt` should implement this function.
 
@@ -74,17 +70,17 @@ class ChipAttr(Stmt):
     - CONFIG_NAME: config name defined in the config rules
     """
 
+    addition_attr: t.Dict[str, t.Callable] = {}
+
     def __init__(self, t: ParseResults):
         self.attr: str = t[0]
 
-    def get_value(self, target: str, config_name: str) -> Any:
-        from .manifest import FolderRule  # lazy-load
+    def get_value(self, target: str, config_name: str) -> t.Any:
+        if self.attr in self.addition_attr:
+            return self.addition_attr[self.attr](target=target, config_name=config_name)
 
         if self.attr == 'IDF_TARGET':
             return target
-
-        if self.attr == 'INCLUDE_DEFAULT':
-            return 1 if target in FolderRule.DEFAULT_BUILD_TARGETS else 0
 
         if self.attr == 'IDF_VERSION':
             return IDF_VERSION
@@ -115,7 +111,7 @@ class Integer(Stmt):
     def __init__(self, t: ParseResults):
         self.expr: str = t[0]
 
-    def get_value(self, target: str, config_name: str) -> Any:  # noqa: ARG002
+    def get_value(self, target: str, config_name: str) -> t.Any:  # noqa: ARG002
         return literal_eval(self.expr)
 
 
@@ -123,7 +119,7 @@ class String(Stmt):
     def __init__(self, t: ParseResults):
         self.expr: str = t[0]
 
-    def get_value(self, target: str, config_name: str) -> Any:  # noqa: ARG002
+    def get_value(self, target: str, config_name: str) -> t.Any:  # noqa: ARG002
         return literal_eval(f'"{self.expr}"')  # double quotes is swallowed by QuotedString
 
 
@@ -131,7 +127,7 @@ class List_(Stmt):
     def __init__(self, t: ParseResults):
         self.expr = t
 
-    def get_value(self, target: str, config_name: str) -> Any:
+    def get_value(self, target: str, config_name: str) -> t.Any:
         return [item.get_value(target, config_name) for item in self.expr]
 
 
@@ -152,7 +148,7 @@ class BoolStmt(Stmt):
         self.comparison: str = t[1]
         self.right: Stmt = t[2]
 
-    def get_value(self, target: str, config_name: str) -> Any:
+    def get_value(self, target: str, config_name: str) -> t.Any:
         _l = self.left.get_value(target, config_name)
         _r = self.right.get_value(target, config_name)
 
@@ -186,23 +182,32 @@ def _or(_l, _r):
     return _l or _r
 
 
-class BoolOrAnd(BoolExpr):
-    def __init__(self, t: ParseResults):
-        if len(t[0]) > 3:
-            raise InvalidIfClause(
-                'Chaining "and"/"or" is not allowed. Please use paratheses instead. '
-                'For example: "a and b and c" should be "(a and b) and c".'
-            )
-        self.left: BoolStmt = t[0][0]
-        self.right: BoolStmt = t[0][2]
+class BoolOr(BoolExpr):
+    def __init__(self, res: ParseResults):
+        self.bool_stmts: t.List[BoolStmt] = []
+        for stmt in res[0]:
+            if stmt != 'or':
+                self.bool_stmts.append(stmt)
 
-        if t[0][1] == 'and':
-            self.operation = _and
-        if t[0][1] == 'or':
-            self.operation = _or
+    def get_value(self, target: str, config_name: str) -> t.Any:
+        for stmt in self.bool_stmts:
+            if stmt.get_value(target, config_name):
+                return True
+        return False
 
-    def get_value(self, target: str, config_name: str) -> Any:
-        return self.operation(self.left.get_value(target, config_name), self.right.get_value(target, config_name))
+
+class BoolAnd(BoolExpr):
+    def __init__(self, res: ParseResults):
+        self.bool_stmts: t.List[BoolStmt] = []
+        for stmt in res[0]:
+            if stmt != 'and':
+                self.bool_stmts.append(stmt)
+
+    def get_value(self, target: str, config_name: str) -> t.Any:
+        for stmt in self.bool_stmts:
+            if not stmt.get_value(target, config_name):
+                return False
+        return True
 
 
 CAP_WORD = Word(alphas.upper(), nums + alphas.upper() + '_').setParseAction(ChipAttr)
@@ -235,6 +240,41 @@ OR = Keyword('or')
 BOOL_EXPR = infixNotation(
     BOOL_STMT,
     [
-        (MatchFirst((AND, OR)), 2, opAssoc.LEFT, BoolOrAnd),
+        (AND, 2, opAssoc.LEFT, BoolAnd),
+        (OR, 2, opAssoc.LEFT, BoolOr),
     ],
 )
+
+
+def register_addition_attribute(attr: str, action: t.Callable[..., t.Any]) -> None:
+    """
+    Register an additional attribute for ChipAttr.
+
+    :param attr: The name of the additional attribute (string).
+    :param action: A callable that processes **kwargs. The `target` and `config_name`
+                   parameters will be passed as kwargs when the attribute is detected.
+    """
+    ChipAttr.addition_attr[attr] = action
+
+
+def parse_bool_expr(stmt: str) -> BoolStmt:
+    """
+    Parse a boolean expression.
+
+    :param stmt: A string containing the boolean expression.
+    :return: A `BoolStmt` object representing the parsed expression.
+
+    .. note::
+
+        You can use this function to parse a boolean expression and evaluate its value based on the given context.
+        For example:
+
+        .. code:: python
+
+           stmt_string = 'IDF_TARGET == "esp32"'
+           stmt: BoolStmt = parse_bool_expr(stmt_string)
+           value = stmt.get_value("esp32", "config_name")
+           print(value)
+           # Output: True
+    """
+    return BOOL_EXPR.parseString(stmt)[0]
