@@ -1,5 +1,8 @@
 name: Test ESP bool parser
-
+on:
+  push:
+    branches:
+      - main
 jobs:
   build-python-packages:
     runs-on: ubuntu-latest
