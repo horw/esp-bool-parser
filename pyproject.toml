@@ -3,9 +3,9 @@ requires = ["flit_core >=3.2,<4"]
 build-backend = "flit_core.buildapi"
 
 [project]
-name = "esp-bool-parser"
+name = "lala-esp-bool-parser"
 authors = [
-    {name = "Fu Hanxi", email = "fuhanxi@espressif.com"}
+    {name = "Test", email = "test@test.com"}
 ]
 readme = "README.md"
 license = {file = "LICENSE"}
